@@ -183,6 +183,9 @@ func (r *Robot) Start(args ...interface{}) (err error) {
 		r.waitGroup.Add(1)
 	}
 	go func() {
+		if r.waitGroup != nil {
+			defer r.waitGroup.Done()
+		}
 		if r.panicHandler != nil {
 			defer func() {
 				if p := recover(); p != nil {
@@ -221,10 +224,6 @@ func (r *Robot) Stop() error {
 	err = r.Connections().Finalize()
 	if err != nil {
 		result = multierror.Append(result, err)
-	}
-
-	if r.waitGroup != nil {
-		r.waitGroup.Done()
 	}
 
 	r.done <- true
