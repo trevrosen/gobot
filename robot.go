@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"sync/atomic"
 
+	"sync"
+
 	multierror "github.com/hashicorp/go-multierror"
 )
 
@@ -51,9 +53,19 @@ type Robot struct {
 	AutoRun     bool
 	running     atomic.Value
 	done        chan bool
+
+	waitGroup     *sync.WaitGroup
+	configFuncs   []RobotConfigFunc
+	panicHandler  func(*Robot, error)
+	lastError     error
+	lastErrorLock sync.Mutex
+
 	Commander
 	Eventer
 }
+
+// RobotConfigFunc is used to configure options not set in NewRobot
+type RobotConfigFunc func(*Robot)
 
 // Robots is a collection of Robot
 type Robots []*Robot
@@ -112,10 +124,11 @@ func NewRobot(v ...interface{}) *Robot {
 		trap: func(c chan os.Signal) {
 			signal.Notify(c, os.Interrupt)
 		},
-		AutoRun:   true,
-		Work:      nil,
-		Eventer:   NewEventer(),
-		Commander: NewCommander(),
+		AutoRun:       true,
+		Work:          nil,
+		lastErrorLock: sync.Mutex{},
+		Eventer:       NewEventer(),
+		Commander:     NewCommander(),
 	}
 
 	for i := range v {
@@ -166,7 +179,18 @@ func (r *Robot) Start(args ...interface{}) (err error) {
 	}
 
 	log.Println("Starting work...")
+	if r.waitGroup != nil {
+		r.waitGroup.Add(1)
+	}
 	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				if r.panicHandler != nil {
+					r.panicHandler(r, p.(error))
+				}
+			}
+		}()
+
 		r.Work()
 		<-r.done
 	}()
@@ -197,6 +221,10 @@ func (r *Robot) Stop() error {
 	err = r.Connections().Finalize()
 	if err != nil {
 		result = multierror.Append(result, err)
+	}
+
+	if r.waitGroup != nil {
+		r.waitGroup.Done()
 	}
 
 	r.done <- true
@@ -258,4 +286,44 @@ func (r *Robot) Connection(name string) Connection {
 		}
 	}
 	return nil
+}
+
+// LastError returns the lastError field. Useful in understanding why a Robot that panicked.
+func (r *Robot) LastError() error {
+	return r.lastError
+}
+
+// SetLastError sets the unexported lastError field on the Robot. Usually set in the panicHandler
+func (r *Robot) SetLastError(err error) {
+	r.lastErrorLock.Lock()
+	defer r.lastErrorLock.Unlock()
+	r.lastError = err
+}
+
+func (r *Robot) SetWaitGroup(wg *sync.WaitGroup) {
+	r.waitGroup = wg
+}
+
+func (r *Robot) SetPanicHandler(h func(*Robot, error)) {
+	r.panicHandler = h
+}
+
+func (r *Robot) WaitGroup() *sync.WaitGroup {
+	return r.waitGroup
+}
+
+// AddConfigFunc adds a RobotConfigFunc to the Robot's configFuncs
+func (r *Robot) AddConfigFunc(opt RobotConfigFunc) {
+	r.configFuncs = append(r.configFuncs, opt)
+}
+
+// RunConfigFuncs executes any RobotConfigFuncs on the Robot
+func (r *Robot) RunConfigFuncs() {
+	if len(r.configFuncs) == 0 {
+		return
+	}
+
+	for _, opt := range r.configFuncs {
+		opt(r)
+	}
 }
