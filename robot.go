@@ -183,13 +183,13 @@ func (r *Robot) Start(args ...interface{}) (err error) {
 		r.waitGroup.Add(1)
 	}
 	go func() {
-		defer func() {
-			if p := recover(); p != nil {
-				if r.panicHandler != nil {
+		if r.panicHandler != nil {
+			defer func() {
+				if p := recover(); p != nil {
 					r.panicHandler(r, p.(error))
 				}
-			}
-		}()
+			}()
+		}
 
 		r.Work()
 		<-r.done
